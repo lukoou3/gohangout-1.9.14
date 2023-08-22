@@ -1,0 +1,6 @@
+inputs:
+- Stdin:
+    codec: json
+
+outputs:
+- Stdout: {}

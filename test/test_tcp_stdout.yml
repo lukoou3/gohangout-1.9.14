@@ -1,0 +1,7 @@
+inputs:
+  - TCP:
+      address: 0.0.0.0:8089
+      codec: json
+
+outputs:
+  - Stdout: { }
