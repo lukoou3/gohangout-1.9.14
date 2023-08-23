@@ -365,6 +365,7 @@ func newClickhouseOutput(config map[interface{}]interface{}) topology.Output {
 	p.concurrent = concurrent
 	p.closeChan = make(chan bool, concurrent)
 
+	// 写入数据库的线程， bulkChan负责线程间通信
 	p.bulkChan = make(chan []map[string]interface{}, concurrent)
 	for i := 0; i < concurrent; i++ {
 		p.wg.Add(1)
@@ -372,7 +373,7 @@ func newClickhouseOutput(config map[interface{}]interface{}) topology.Output {
 			for {
 				select {
 				case events := <-p.bulkChan:
-					p.innerFlush(events)
+					p.innerFlush(events) // 刷写数据库
 				case <-p.closeChan:
 					p.wg.Done()
 					return
@@ -475,7 +476,7 @@ func (c *ClickhouseOutput) innerFlush(events []map[string]interface{}) {
 
 		for _, event := range events {
 			if c.autoConvert {
-				c.convert(event)
+				c.convert(event) // 转换类型，匹配clickhouse类型
 			}
 
 			args := make([]interface{}, c.fieldsLength)
@@ -517,6 +518,7 @@ func (c *ClickhouseOutput) flush() {
 }
 
 // Emit appends event to c.events, and push to bulkChan if needed
+// 收到元素, 到bulk_actions批次， 输出到c.bulkChan
 func (c *ClickhouseOutput) Emit(event map[string]interface{}) {
 	c.mux.Lock()
 	c.events = append(c.events, event)
