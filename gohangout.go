@@ -69,6 +69,7 @@ func (inputs gohangoutInputs) stop() {
 }
 
 func init() {
+	// 初始化加载命令行参数
 	flag.StringVar(&options.config, "config", options.config, "path to configuration file or directory")
 	flag.BoolVar(&options.autoReload, "reload", options.autoReload, "if auto reload while config file changed")
 
@@ -89,6 +90,7 @@ func init() {
 func buildPluginLink(config map[string]interface{}) (boxes []*input.InputBox, err error) {
 	boxes = make([]*input.InputBox, 0)
 
+	// 加载所有的inputs
 	for inputIdx, inputI := range config["inputs"].([]interface{}) {
 		var inputPlugin topology.Input
 
@@ -100,12 +102,14 @@ func buildPluginLink(config map[string]interface{}) (boxes []*input.InputBox, er
 			inputType := inputTypeI.(string)
 			inputConfig := inputConfigI.(map[interface{}]interface{})
 
+			// 从注册的input工厂map中获取工厂函数，生成input
 			inputPlugin = input.GetInput(inputType, inputConfig)
 			if inputPlugin == nil {
 				err = fmt.Errorf("invalid input plugin")
 				return
 			}
 
+			// 构建InputBox, 之后主要就是调用box的beat方法
 			box := input.NewInputBox(inputPlugin, inputConfig, config, mainThreadExitChan)
 			if box == nil {
 				err = fmt.Errorf("new input box fail")
@@ -186,15 +190,18 @@ func main() {
 		}()
 	}
 
+	// 加载配置文件，加载为map[string]interface{}
 	gohangoutConfig, err := config.ParseConfig(options.config)
 	if err != nil {
 		glog.Fatalf("could not parse config: %v", err)
 	}
+	// 构建InputBox，boxes []*input.InputBox
 	boxes, err := buildPluginLink(gohangoutConfig)
 	if err != nil {
 		glog.Fatalf("build plugin link error: %v", err)
 	}
 	inputs = gohangoutInputs(boxes)
+	// 就是遍历所有input，调用 *InputBox.Beat(worker)
 	go inputs.start()
 
 	if options.autoReload {

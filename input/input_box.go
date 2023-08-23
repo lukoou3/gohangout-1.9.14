@@ -1,162 +1,169 @@
 package input
 
 import (
-	"reflect"
-	"sync"
+    "reflect"
+    "sync"
 
-	"github.com/childe/gohangout/field_setter"
-	"github.com/childe/gohangout/filter"
-	"github.com/childe/gohangout/output"
-	"github.com/childe/gohangout/topology"
-	"github.com/childe/gohangout/value_render"
-	"github.com/golang/glog"
-	"github.com/prometheus/client_golang/prometheus"
+    "github.com/childe/gohangout/field_setter"
+    "github.com/childe/gohangout/filter"
+    "github.com/childe/gohangout/output"
+    "github.com/childe/gohangout/topology"
+    "github.com/childe/gohangout/value_render"
+    "github.com/golang/glog"
+    "github.com/prometheus/client_golang/prometheus"
 )
 
 type InputBox struct {
-	config             map[string]interface{} // whole config
-	input              topology.Input
-	outputsInAllWorker [][]*topology.OutputBox
-	stop               bool
-	once               sync.Once
-	shutdownChan       chan bool
+    config             map[string]interface{} // whole config
+    input              topology.Input
+    outputsInAllWorker [][]*topology.OutputBox
+    stop               bool
+    once               sync.Once
+    shutdownChan       chan bool
 
-	promCounter prometheus.Counter
+    promCounter prometheus.Counter
 
-	shutdownWhenNil    bool
-	mainThreadExitChan chan struct{}
+    shutdownWhenNil    bool
+    mainThreadExitChan chan struct{}
 
-	addFields map[field_setter.FieldSetter]value_render.ValueRender
+    addFields map[field_setter.FieldSetter]value_render.ValueRender
 }
 
 // SetShutdownWhenNil is used for benchmark.
 // Gohangout main thread would exit when one input box receive a nil message, such as Ctrl-D in Stdin input
 func (box *InputBox) SetShutdownWhenNil(shutdownWhenNil bool) {
-	box.shutdownWhenNil = shutdownWhenNil
+    box.shutdownWhenNil = shutdownWhenNil
 }
 
 func NewInputBox(input topology.Input, inputConfig map[interface{}]interface{}, config map[string]interface{}, mainThreadExitChan chan struct{}) *InputBox {
-	b := &InputBox{
-		input:        input,
-		config:       config,
-		stop:         false,
-		shutdownChan: make(chan bool, 1),
+    b := &InputBox{
+        input:        input,
+        config:       config,
+        stop:         false,
+        shutdownChan: make(chan bool, 1),
 
-		promCounter: topology.GetPromCounter(inputConfig),
+        promCounter: topology.GetPromCounter(inputConfig),
 
-		mainThreadExitChan: mainThreadExitChan,
-	}
-	if add_fields, ok := inputConfig["add_fields"]; ok {
-		b.addFields = make(map[field_setter.FieldSetter]value_render.ValueRender)
-		for k, v := range add_fields.(map[interface{}]interface{}) {
-			fieldSetter := field_setter.NewFieldSetter(k.(string))
-			if fieldSetter == nil {
-				glog.Errorf("could build field setter from %s", k.(string))
-				return nil
-			}
-			b.addFields[fieldSetter] = value_render.GetValueRender(v.(string))
-		}
-	} else {
-		b.addFields = nil
-	}
-	return b
+        mainThreadExitChan: mainThreadExitChan,
+    }
+    if add_fields, ok := inputConfig["add_fields"]; ok {
+        b.addFields = make(map[field_setter.FieldSetter]value_render.ValueRender)
+        for k, v := range add_fields.(map[interface{}]interface{}) {
+            fieldSetter := field_setter.NewFieldSetter(k.(string))
+            if fieldSetter == nil {
+                glog.Errorf("could build field setter from %s", k.(string))
+                return nil
+            }
+            b.addFields[fieldSetter] = value_render.GetValueRender(v.(string))
+        }
+    } else {
+        b.addFields = nil
+    }
+    return b
 }
 
 func (box *InputBox) beat(workerIdx int) {
-	var firstNode *topology.ProcessorNode = box.buildTopology(workerIdx)
+    // 创建拓扑node，获取第一个节点input的node
+    var firstNode *topology.ProcessorNode = box.buildTopology(workerIdx)
 
-	var (
-		event map[string]interface{}
-	)
+    var (
+        event map[string]interface{}
+    )
 
-	for !box.stop {
-		event = box.input.ReadOneEvent()
-		if box.promCounter != nil {
-			box.promCounter.Inc()
-		}
-		if event == nil {
-			glog.V(5).Info("received nil message.")
-			if box.stop {
-				break
-			}
-			if box.shutdownWhenNil {
-				glog.Info("received nil message. shutdown...")
-				box.mainThreadExitChan <- struct{}{}
-				break
-			} else {
-				continue
-			}
-		}
-		for fs, v := range box.addFields {
-			event = fs.SetField(event, v.Render(event), "", false)
-		}
-		firstNode.Process(event)
-	}
+    // 循环处理input接收到的元素
+    for !box.stop {
+        event = box.input.ReadOneEvent()
+        if box.promCounter != nil {
+            box.promCounter.Inc()
+        }
+        if event == nil {
+            glog.V(5).Info("received nil message.")
+            if box.stop {
+                break
+            }
+            if box.shutdownWhenNil {
+                glog.Info("received nil message. shutdown...")
+                box.mainThreadExitChan <- struct{}{}
+                break
+            } else {
+                continue
+            }
+        }
+        // 是否addFields，可以忽略
+        for fs, v := range box.addFields {
+            event = fs.SetField(event, v.Render(event), "", false)
+        }
+        // 链表结构Node从头到尾调用Process
+        firstNode.Process(event)
+    }
 }
 
 func (box *InputBox) buildTopology(workerIdx int) *topology.ProcessorNode {
-	outputs := topology.BuildOutputs(box.config, output.BuildOutput)
-	box.outputsInAllWorker[workerIdx] = outputs
+    outputs := topology.BuildOutputs(box.config, output.BuildOutput)
+    box.outputsInAllWorker[workerIdx] = outputs
 
-	var outputProcessor topology.Processor
-	if len(outputs) == 1 {
-		outputProcessor = outputs[0]
-	} else {
-		outputProcessor = (topology.OutputsProcessor)(outputs)
-	}
+    // 输出Processor
+    var outputProcessor topology.Processor
+    if len(outputs) == 1 {
+        outputProcessor = outputs[0]
+    } else {
+        outputProcessor = (topology.OutputsProcessor)(outputs)
+    }
 
-	filterBoxes := topology.BuildFilterBoxes(box.config, filter.BuildFilter)
+    filterBoxes := topology.BuildFilterBoxes(box.config, filter.BuildFilter)
 
-	var firstNode *topology.ProcessorNode
-	for _, b := range filterBoxes {
-		firstNode = topology.AppendProcessorsToLink(firstNode, b)
-	}
-	firstNode = topology.AppendProcessorsToLink(firstNode, outputProcessor)
+    var firstNode *topology.ProcessorNode
+    // filter Processor
+    for _, b := range filterBoxes {
+        firstNode = topology.AppendProcessorsToLink(firstNode, b)
+    }
+    // 把input和后面的Processor连起来，最终在所有Processor从头到尾依次调用Process方法
+    firstNode = topology.AppendProcessorsToLink(firstNode, outputProcessor)
 
-	// Set BelongTo
-	var node *topology.ProcessorNode
-	node = firstNode
-	for _, b := range filterBoxes {
-		node = node.Next
-		v := reflect.ValueOf(b.Filter)
-		f := v.MethodByName("SetBelongTo")
-		if f.IsValid() {
-			f.Call([]reflect.Value{reflect.ValueOf(node)})
-		}
-	}
+    // Set BelongTo
+    var node *topology.ProcessorNode
+    node = firstNode
+    for _, b := range filterBoxes {
+        node = node.Next
+        v := reflect.ValueOf(b.Filter)
+        f := v.MethodByName("SetBelongTo")
+        if f.IsValid() {
+            f.Call([]reflect.Value{reflect.ValueOf(node)})
+        }
+    }
 
-	return firstNode
+    return firstNode
 }
 
 // Beat starts the processors and wait until shutdown
 func (box *InputBox) Beat(worker int) {
-	box.outputsInAllWorker = make([][]*topology.OutputBox, worker)
-	for i := 0; i < worker; i++ {
-		go box.beat(i)
-	}
+    box.outputsInAllWorker = make([][]*topology.OutputBox, worker)
+    for i := 0; i < worker; i++ {
+        go box.beat(i)
+    }
 
-	<-box.shutdownChan
+    <-box.shutdownChan
 }
 
 func (box *InputBox) shutdown() {
-	box.once.Do(func() {
+    box.once.Do(func() {
 
-		glog.Infof("try to shutdown input %T", box.input)
-		box.input.Shutdown()
+        glog.Infof("try to shutdown input %T", box.input)
+        box.input.Shutdown()
 
-		for i, outputs := range box.outputsInAllWorker {
-			for _, o := range outputs {
-				glog.Infof("try to shutdown output %T in worker %d", o, i)
-				o.Output.Shutdown()
-			}
-		}
-	})
+        for i, outputs := range box.outputsInAllWorker {
+            for _, o := range outputs {
+                glog.Infof("try to shutdown output %T in worker %d", o, i)
+                o.Output.Shutdown()
+            }
+        }
+    })
 
-	box.shutdownChan <- true
+    box.shutdownChan <- true
 }
 
 // Shutdown shutdowns the inputs and outputs
 func (box *InputBox) Shutdown() {
-	box.shutdown()
-	box.stop = true
+    box.shutdown()
+    box.stop = true
 }
